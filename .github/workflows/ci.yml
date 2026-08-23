@@ -66,5 +66,21 @@ jobs:
       - name: Configure and Compile (Dynamic)
         run: |
           cd nginx-src
+          make clean
           ./configure --with-compat --add-dynamic-module=../
-          make -j$(nproc) modules
+          make -j$(nproc)
+          mkdir -p logs
+          cat << 'EOF' > dyn_test.conf
+          load_module objs/ngx_http_zstd_filter_module.so;
+          load_module objs/ngx_http_zstd_static_module.so;
+          error_log stderr;
+          events {}
+          http {
+              server {
+                  listen 127.0.0.1:8080;
+                  zstd on;
+                  zstd_static on;
+              }
+          }
+          EOF
+          ./objs/nginx -p "$PWD" -c dyn_test.conf -t
