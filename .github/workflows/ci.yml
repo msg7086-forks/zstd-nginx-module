@@ -61,7 +61,7 @@ jobs:
       - name: Run Integration Tests
         run: |
           export PATH="$GITHUB_WORKSPACE/nginx-src/objs:$PATH"
-          prove -v t/12-accept-encoding.t
+          prove -v t/12-accept-encoding.t t/14-status-filtering.t
 
       - name: Configure and Compile (Dynamic)
         run: |
