@@ -59,12 +59,15 @@ typedef struct {
     size_t                       bytes_in;
     size_t                       bytes_out;
 
+    off_t                        pledged_size;
+
     unsigned                     action:2;
     unsigned                     last:1;
     unsigned                     redo:1;
     unsigned                     flush:1;
     unsigned                     done:1;
     unsigned                     nomem:1;
+    unsigned                     cctx_ready:1;
 } ngx_http_zstd_ctx_t;
 
 
@@ -103,6 +106,7 @@ static void * ngx_http_zstd_filter_alloc(void *opaque, size_t size);
 static void ngx_http_zstd_filter_free(void *opaque, void *address);
 static char *ngx_http_zstd_comp_level(ngx_conf_t *cf, void *post, void *data);
 static char *ngx_conf_zstd_set_num_slot_with_negatives(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static void ngx_http_zstd_cleanup_dict(void *data);
 
 
 static ngx_http_zstd_comp_level_bounds_t  ngx_http_zstd_comp_level_bounds = {
@@ -244,6 +248,8 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
     r->headers_out.content_encoding = h;
 
     r->main_filter_need_in_memory = 1;
+
+    ctx->pledged_size = r->headers_out.content_length_n;
 
     ngx_http_clear_content_length(r);
     ngx_http_clear_accept_ranges(r);
@@ -440,7 +446,9 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
                    ctx->buffer_out.dst, ctx->buffer_out.pos,
                    ctx->buffer_out.size);
 
-    ctx->in_buf->pos += ctx->buffer_in.pos - pos_in;
+    if (ctx->buffer_in.pos != pos_in) {
+        ctx->in_buf->pos += ctx->buffer_in.pos - pos_in;
+    }
     ctx->out_buf->last += ctx->buffer_out.pos - pos_out;
     ctx->redo = 0;
 
@@ -501,6 +509,8 @@ ngx_http_zstd_filter_compress(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 static ngx_int_t
 ngx_http_zstd_filter_add_data(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
 {
+    ngx_chain_t  *cl;
+
     if (ctx->buffer_in.pos < ctx->buffer_in.size
         || ctx->flush
         || ctx->last
@@ -516,8 +526,10 @@ ngx_http_zstd_filter_add_data(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         return NGX_DECLINED;
     }
 
-    ctx->in_buf = ctx->in->buf;
-    ctx->in = ctx->in->next;
+    cl = ctx->in;
+    ctx->in_buf = cl->buf;
+    ctx->in = cl->next;
+    ngx_free_chain(r->pool, cl);
 
     if (ctx->in_buf->flush) {
         ctx->flush = 1;
@@ -526,15 +538,15 @@ ngx_http_zstd_filter_add_data(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         ctx->last = 1;
     }
 
+    if (ngx_buf_size(ctx->in_buf) == 0) {
+        return (ctx->last || ctx->flush) ? NGX_OK : NGX_AGAIN;
+    }
+
     ctx->buffer_in.src = ctx->in_buf->pos;
     ctx->buffer_in.pos = 0;
     ctx->buffer_in.size = ngx_buf_size(ctx->in_buf);
 
     ctx->bytes_in += ngx_buf_size(ctx->in_buf);
-
-    if (ctx->buffer_in.size == 0) {
-        return NGX_AGAIN;
-    }
 
     return NGX_OK;
 }
@@ -557,6 +569,11 @@ ngx_http_zstd_filter_get_buf(ngx_http_request_t *r, ngx_http_zstd_ctx_t *ctx)
         ctx->free = ctx->free->next;
         ctx->out_buf = cl->buf;
         ngx_free_chain(r->pool, cl);
+
+        ctx->out_buf->flush = 0;
+        ctx->out_buf->sync = 0;
+        ctx->out_buf->last_buf = 0;
+        ctx->out_buf->last_in_chain = 0;
 
     } else if (ctx->bufs < zlcf->bufs.num) {
         ctx->out_buf = ngx_create_temp_buf(r->pool, zlcf->bufs.size);
@@ -642,6 +659,16 @@ ngx_http_zstd_filter_create_cstream(ngx_http_request_t *r,
                           ZSTD_getErrorName(rc));
 
             goto failed;
+        }
+    }
+
+    if (ctx->pledged_size >= 0) {
+        rc = ZSTD_CCtx_setPledgedSrcSize(
+                 cstream, (unsigned long long) ctx->pledged_size);
+        if (ZSTD_isError(rc)) {
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "zstd: ZSTD_CCtx_setPledgedSrcSize(%O) ignored: %s",
+                           ctx->pledged_size, ZSTD_getErrorName(rc));
         }
     }
 
@@ -807,12 +834,29 @@ ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                 goto close;
             }
 
-            conf->dict = ZSTD_createCDict_byReference(buf, size, conf->level);
+            conf->dict = ZSTD_createCDict(buf, size, conf->level);
             if (conf->dict == NULL) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "ZSTD_createCDict_byReference() failed");
+                                   "ZSTD_createCDict() failed");
                 rc = NGX_CONF_ERROR;
                 goto close;
+            }
+
+            {
+                ngx_pool_cleanup_t  *cln;
+
+                cln = ngx_pool_cleanup_add(cf->pool, 0);
+                if (cln == NULL) {
+                    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                       "ngx_pool_cleanup_add() failed");
+                    ZSTD_freeCDict(conf->dict);
+                    conf->dict = NULL;
+                    rc = NGX_CONF_ERROR;
+                    goto close;
+                }
+
+                cln->handler = ngx_http_zstd_cleanup_dict;
+                cln->data = conf->dict;
             }
         }
     }
@@ -919,6 +963,17 @@ ngx_http_zstd_filter_free(void *opaque, void *address)
                    "zstd free: %p", address);
 
 #endif
+}
+
+
+static void
+ngx_http_zstd_cleanup_dict(void *data)
+{
+    ZSTD_CDict  *dict = data;
+
+    if (dict != NULL) {
+        ZSTD_freeCDict(dict);
+    }
 }
 
 
