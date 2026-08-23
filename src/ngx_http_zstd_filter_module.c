@@ -10,6 +10,8 @@
 
 #include <zstd.h>
 
+#include "ngx_http_zstd_common.h"
+
 
 #define NGX_HTTP_ZSTD_FILTER_COMPRESS       0
 #define NGX_HTTP_ZSTD_FILTER_FLUSH          1
@@ -88,8 +90,6 @@ static ZSTD_CStream *ngx_http_zstd_filter_create_cstream(ngx_http_request_t *r,
     ngx_http_zstd_ctx_t *ctx);
 static ngx_int_t ngx_http_zstd_filter_compress(ngx_http_request_t *r,
     ngx_http_zstd_ctx_t *ctx);
-static ngx_int_t ngx_http_zstd_accept_encoding(ngx_str_t *ae);
-static ngx_int_t ngx_http_zstd_ok(ngx_http_request_t *r);
 static ngx_int_t ngx_http_zstd_filter_init(ngx_conf_t *cf);
 static void * ngx_http_zstd_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_zstd_init_main_conf(ngx_conf_t *cf, void *conf);
@@ -651,61 +651,6 @@ failed:
     }
 
     return NULL;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_accept_encoding(ngx_str_t *ae)
-{
-    u_char  *p;
-
-    p = ngx_strcasestrn(ae->data, "zstd", sizeof("zstd") - 2);
-    if (p == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (p == ae->data || (*(p - 1) == ',' || *(p - 1) == ' ')) {
-
-        p += sizeof("zstd") - 1;
-
-        if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-            return NGX_OK;
-        }
-    }
-
-    return NGX_DECLINED;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_ok(ngx_http_request_t *r)
-{
-    ngx_table_elt_t  *ae;
-
-    if (r != r->main) {
-        return NGX_DECLINED;
-    }
-
-    ae = r->headers_in.accept_encoding;
-    if (ae == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (ae->value.len < sizeof("zstd") - 1) {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_memcmp(ae->value.data, "zstd", 4) != 0
-        && ngx_http_zstd_accept_encoding(&ae->value) != NGX_OK)
-    {
-        return NGX_DECLINED;
-    }
-
-
-    r->gzip_tested = 1;
-    r->gzip_ok = 0;
-
-    return NGX_OK;
 }
 
 
