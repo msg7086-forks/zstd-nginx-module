@@ -102,8 +102,6 @@ static char *ngx_http_zstd_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static ngx_int_t ngx_http_zstd_add_variables(ngx_conf_t *cf);
 static ngx_int_t ngx_http_zstd_ratio_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *vv, uintptr_t data);
-static void * ngx_http_zstd_filter_alloc(void *opaque, size_t size);
-static void ngx_http_zstd_filter_free(void *opaque, void *address);
 static char *ngx_http_zstd_comp_level(ngx_conf_t *cf, void *post, void *data);
 static char *ngx_conf_zstd_set_num_slot_with_negatives(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void ngx_http_zstd_cleanup_dict(void *data);
@@ -604,19 +602,14 @@ ngx_http_zstd_filter_create_cstream(ngx_http_request_t *r,
 {
     size_t                      rc;
     ZSTD_CStream               *cstream;
-    ZSTD_customMem              cmem;
     ngx_http_zstd_loc_conf_t   *zlcf;
 
     zlcf = ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
 
-    cmem.customAlloc = ngx_http_zstd_filter_alloc;
-    cmem.customFree = ngx_http_zstd_filter_free;
-    cmem.opaque = ctx;
-
-    cstream = ZSTD_createCStream_advanced(cmem);
+    cstream = ZSTD_createCStream();
     if (cstream == NULL) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
-                      "ZSTD_createCStream_advanced() failed");
+                      "ZSTD_createCStream() failed");
 
         return NULL;
     }
@@ -888,22 +881,6 @@ ngx_http_zstd_filter_init(ngx_conf_t *cf)
 }
 
 
-static void *
-ngx_http_zstd_filter_alloc(void *opaque, size_t size)
-{
-    ngx_http_zstd_ctx_t *ctx = opaque;
-
-    void  *p;
-
-    p = ngx_palloc(ctx->request->pool, size);
-
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ctx->request->connection->log, 0,
-                   "zstd alloc: %p, size: %uz", p, size);
-
-    return p;
-}
-
-
 static ngx_int_t
 ngx_http_zstd_add_variables(ngx_conf_t *cf)
 {
@@ -949,20 +926,6 @@ ngx_http_zstd_ratio_variable(ngx_http_request_t *r,
     vv->no_cacheable = 1;
 
     return NGX_OK;
-}
-
-
-static void
-ngx_http_zstd_filter_free(void *opaque, void *address)
-{
-#if (NGX_DEBUG)
-
-    ngx_http_zstd_ctx_t *ctx = opaque;
-
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->request->connection->log, 0,
-                   "zstd free: %p", address);
-
-#endif
 }
 
 

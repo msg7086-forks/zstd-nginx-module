@@ -67,4 +67,20 @@ jobs:
         run: |
           cd nginx-src
           ./configure --with-compat --add-dynamic-module=../
-          make -j$(nproc) modules
+          make -j$(nproc)
+          mkdir -p logs
+          cat > dyn_test.conf <<EOF
+          load_module $PWD/objs/ngx_http_zstd_filter_module.so;
+          load_module $PWD/objs/ngx_http_zstd_static_module.so;
+          events {}
+          http {
+              server {
+                  listen 127.0.0.1:8080;
+                  location / {
+                      zstd on;
+                      zstd_static on;
+                  }
+              }
+          }
+          EOF
+          ./objs/nginx -p "$PWD" -c dyn_test.conf -t
