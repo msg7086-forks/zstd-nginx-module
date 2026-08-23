@@ -8,6 +8,8 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include "ngx_http_zstd_common.h"
+
 
 #define NGX_HTTP_ZSTD_STATIC_OFF        0
 #define NGX_HTTP_ZSTD_STATIC_ON         1
@@ -40,8 +42,6 @@ static ngx_command_t  ngx_http_zstd_static_commands[] = {
 
 
 static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_zstd_accept_encoding(ngx_str_t *ae);
-static ngx_int_t ngx_http_zstd_ok(ngx_http_request_t *r);
 static void * ngx_http_zstd_static_create_loc_conf(ngx_conf_t *cf);
 static char * ngx_http_zstd_static_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
@@ -110,7 +110,7 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     }
 
     if (zscf->enable == NGX_HTTP_ZSTD_STATIC_ON) {
-        rc = ngx_http_zstd_ok(r);
+        rc = ngx_http_zstd_accepts(r);
 
     } else {
         rc = NGX_OK;
@@ -277,61 +277,6 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     out.next = NULL;
 
     return ngx_http_output_filter(r, &out);
-}
-
-
-static ngx_int_t
-ngx_http_zstd_ok(ngx_http_request_t *r)
-{
-    ngx_table_elt_t  *ae;
-
-    if (r != r->main) {
-        return NGX_DECLINED;
-    }
-
-    ae = r->headers_in.accept_encoding;
-    if (ae == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (ae->value.len < sizeof("zstd") - 1) {
-        return NGX_DECLINED;
-    }
-
-    if (ngx_memcmp(ae->value.data, "zstd", 4) != 0
-        && ngx_http_zstd_accept_encoding(&ae->value) != NGX_OK)
-    {
-        return NGX_DECLINED;
-    }
-
-
-    r->gzip_tested = 1;
-    r->gzip_ok = 0;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_zstd_accept_encoding(ngx_str_t *ae)
-{
-    u_char  *p;
-
-    p = ngx_strcasestrn(ae->data, "zstd", sizeof("zstd") - 1);
-    if (p == NULL) {
-        return NGX_DECLINED;
-    }
-
-    if (p == ae->data || (*(p - 1) == ',' || *(p - 1) == ' ')) {
-
-        p += sizeof("zstd") - 1;
-
-        if (p == ae->data + ae->len || *p == ',' || *p == ' ' || *p == ';') {
-            return NGX_OK;
-        }
-    }
-
-    return NGX_DECLINED;
 }
 
 
