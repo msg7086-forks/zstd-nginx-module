@@ -1,0 +1,58 @@
+name: CI Base Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    name: Build Nginx with Zstd
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+
+    steps:
+      - name: Checkout module code
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libpcre2-dev \
+            libssl-dev \
+            zlib1g-dev \
+            libzstd-dev \
+            wget \
+            ca-certificates
+
+      - name: Download Nginx mainline
+        run: |
+          NGINX_VER=$(wget -qO- https://nginx.org/en/download.html | grep -oP 'nginx-\K[0-9]+\.[0-9]+\.[0-9]+(?=\.tar\.gz)' | sort -V | tail -1)
+          echo "Downloading Nginx $NGINX_VER..."
+          wget http://nginx.org/download/nginx-$NGINX_VER.tar.gz
+          tar -zxf nginx-$NGINX_VER.tar.gz
+          mv nginx-$NGINX_VER nginx-src
+
+      - name: Configure and Compile (Static)
+        run: |
+          cd nginx-src
+          ./configure --add-module=../
+          make -j$(nproc)
+
+      - name: Configure and Compile (Dynamic)
+        run: |
+          cd nginx-src
+          ./configure --with-compat --add-dynamic-module=../
+          make -j$(nproc) modules
